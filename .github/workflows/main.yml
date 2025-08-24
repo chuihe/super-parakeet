@@ -1,0 +1,199 @@
+name: Build Icon Magisk Module
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y unzip imagemagick
+
+    - name: Create directories
+      run: |
+        mkdir -p extracted
+        mkdir -p out/icons/fancy_icons
+        mkdir -p out/icons/res/drawable-xxhdpi
+        mkdir -p out/magisk_module
+
+    - name: Process dark.zip
+      run: |
+        if [ -f "dark.zip" ]; then
+          echo "Processing dark.zip..."
+          unzip -q -o dark.zip -d extracted/dark
+          
+          if [ -f "extracted/dark/icons" ]; then
+            mv extracted/dark/icons extracted/dark/icons.zip
+            unzip -q -o extracted/dark/icons.zip -d extracted/dark/icons_extracted
+            
+            if [ -d "extracted/dark/icons_extracted/res/drawable-xxhdpi" ]; then
+              cd extracted/dark/icons_extracted/res/drawable-xxhdpi
+              
+              for dir in */; do
+                dir_name="${dir%/}"
+                mkdir -p ../../../../out/icons/fancy_icons/$dir_name
+                
+                if [ -f "$dir_name/0.png" ]; then
+                  cp "$dir_name/0.png" "../../../../out/icons/fancy_icons/$dir_name/dark0.png"
+                fi
+                
+                if [ -f "$dir_name/1.png" ]; then
+                  cp "$dir_name/1.png" "../../../../out/icons/fancy_icons/$dir_name/dark1.png"
+                fi
+              done
+              
+              cd ../../../..
+            fi
+          fi
+          
+          # Copy Magisk module files
+          if [ -d "extracted/dark/META-INF" ]; then
+            cp -r extracted/dark/META-INF out/magisk_module/
+          fi
+          
+          for file in extracted/dark/*; do
+            if [ -f "$file" ] && [[ "$file" != *"icons"* ]]; then
+              filename=$(basename "$file")
+              if [ "$filename" != "customize.sh" ] && [ "$filename" != "module.prop" ] && [ "$filename" != "post-fs-data.sh" ]; then
+                cp "$file" out/magisk_module/
+              fi
+            fi
+          done
+        else
+          echo "dark.zip not found"
+          exit 1
+        fi
+
+    - name: Process light.zip
+      run: |
+        if [ -f "light.zip" ]; then
+          echo "Processing light.zip..."
+          unzip -q -o light.zip -d extracted/light
+          
+          if [ -f "extracted/light/icons" ]; then
+            mv extracted/light/icons extracted/light/icons.zip
+            unzip -q -o extracted/light/icons.zip -d extracted/light/icons_extracted
+            
+            if [ -d "extracted/light/icons_extracted/res/drawable-xxhdpi" ]; then
+              cd extracted/light/icons_extracted/res/drawable-xxhdpi
+              
+              for dir in */; do
+                dir_name="${dir%/}"
+                mkdir -p ../../../../out/icons/fancy_icons/$dir_name
+                
+                if [ -f "$dir_name/0.png" ]; then
+                  cp "$dir_name/0.png" "../../../../out/icons/fancy_icons/$dir_name/light0.png"
+                fi
+                
+                if [ -f "$dir_name/1.png" ]; then
+                  cp "$dir_name/1.png" "../../../../out/icons/fancy_icons/$dir_name/light1.png"
+                fi
+              done
+              
+              cd ../../../..
+            fi
+          fi
+        else
+          echo "light.zip not found"
+          exit 1
+        fi
+
+    - name: Create manifest.xml files
+      run: |
+        cd out/icons/fancy_icons
+        for app_dir in */; do
+          if [ -d "$app_dir" ]; then
+            cat > "${app_dir}manifest.xml" << 'EOF'
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<Icon version="1" width="432" height="432">
+    <Var name="center_x" expression="216" const="true"/>
+    <Var name="center_y" expression="216" const="true"/>
+    
+    <Group visibility="#__darkmode==0">
+        <Image src="light0.png" x="#center_x" y="#center_y" 
+               align="center" alignV="center" 
+               pivotX="#center_x" pivotY="#center_y"/>
+        
+        <Image src="light1.png" x="#center_x" y="#center_y" 
+               align="center" alignV="center" 
+               pivotX="#center_x" pivotY="#center_y"/>
+    </Group>
+    
+    <Group visibility="#__darkmode==1">
+        <Image src="dark0.png" x="#center_x" y="#center_y" 
+               align="center" alignV="center" 
+               pivotX="#center_x" pivotY="#center_y"/>
+        
+        <Image src="dark1.png" x="#center_x" y="#center_y" 
+               align="center" alignV="center" 
+               pivotX="#center_x" pivotY="#center_y"/>
+    </Group>
+</Icon>
+EOF
+          fi
+        done
+        cd ../../..
+
+    - name: Merge light mode icons
+      run: |
+        if [ -d "extracted/light/icons_extracted/res/drawable-xxhdpi" ]; then
+          cd extracted/light/icons_extracted/res/drawable-xxhdpi
+          
+          for app_dir in */; do
+            app_name="${app_dir%/}"
+            
+            if [ -f "$app_name/0.png" ] && [ -f "$app_name/1.png" ]; then
+              composite -gravity center "$app_name/1.png" "$app_name/0.png" "../../../../out/icons/res/drawable-xxhdpi/$app_name.png"
+            fi
+          done
+          
+          cd ../../../..
+        fi
+
+    - name: Create transform_config.xml
+      run: |
+        cat > out/icons/transform_config.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<config>
+    <action target="Icon">
+        <param name="packageName" value=".*" />
+        <param name="drawable" value="res/drawable-xxhdpi/${packageName}.png" />
+    </action>
+    
+    <action target="Icon" forEach="fancy_icons">
+        <param name="packageName" value="${forEach}" />
+        <param name="drawable" value="fancy_icons/${forEach}/manifest" />
+    </action>
+</config>
+EOF
+
+    - name: Package icons
+      run: |
+        cd out/icons
+        zip -r ../magisk_module/icons .
+        cd ../..
+
+    - name: Create final Magisk module
+      run: |
+        cd out/magisk_module
+        zip -r ../monet_icons_module.zip .
+        cd ../..
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: monet-icons-module
+        path: out/monet_icons_module.zip
+
+    - name: Clean up
+      run: |
+        rm -rf extracted
